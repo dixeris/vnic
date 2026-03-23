@@ -8,15 +8,38 @@
 
 static struct net_device_ops vnic_netdev_ops = 
 {
-	.ndo_init		=	vnic_dev_init,
 	.ndo_start_xmit		=	vnic_xmit,
-	.ndo_validate		=	eth_validate_addr,
-	.ndo_set_rx_mode	=	set_multicast_list,
-	.ndo_set_ma_address	=	eth_mac_addr,
+	.ndo_set_mac_address	=	eth_mac_addr,
 	.ndo_get_stats64	=	vnic_get_stats64,
-	.ndo_change_carrier	=	vnic_change_carrier,
 };
 
+static void vnic_get_stats64(struct net_device *dev, 
+				struct rtnl_link_stats64 *stats)
+{
+	int i;
+	u64 packets, bytes;
+
+	for_each_possible_cpu(i) {
+
+		const struct pcpu_lstats *lb_stats;
+		unsigned int start;
+		u64 tpackets, tbytes;
+		
+		lb_stats = per_cpu_ptr(dev->lstats, i);
+
+		do {
+			start = u64_stats_fetch_begin(&lb_stats->syncp);
+			tbytes = u64_stats_read(lb_stats->bytes64);
+			tpackets  = u64_stats_read(lb_stats->packets64);
+		} while(u64_stats_fetch_retry(&stats->syncp, start));
+
+		packets += tpackets;
+		bytes += tbytes;	
+
+		stats->rx_packets = packets;
+		stats->rx_bytes = bytes; 
+	}
+}
 
 static void vnic_setup(struct net_device *dev) 
 {
