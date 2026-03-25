@@ -1,10 +1,37 @@
 #include <linux/init.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/ethtool.h>
+#include <linux/etherdevice.h>
 #include <linux/printk.h>
 #include <linux/netdevice.h>
+#include <linux/u64_stats_sync.h>
+#include <linux/net_tstamp.h>
 #include <net/rtnetlink.h>
 
 #define DRV_NAME	"vnic"
+
+struct vnic_private {
+	
+};
+	
+	
+static void vnic_get_stats64(struct net_device *dev, 
+				struct rtnl_link_stats64 *stats)
+{
+	dev_get_tstats64(dev,stats);
+}
+
+static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+
+	dev_sw_netstats_tx_add(dev, 1, skb->len);
+	
+	skb_tx_timestamp(skb);
+	dev_kfree_skb(skb);
+	
+	return NETDEV_TX_OK;
+}
 
 static struct net_device_ops vnic_netdev_ops = 
 {
@@ -13,42 +40,14 @@ static struct net_device_ops vnic_netdev_ops =
 	.ndo_get_stats64	=	vnic_get_stats64,
 };
 
-static void vnic_get_stats64(struct net_device *dev, 
-				struct rtnl_link_stats64 *stats)
-{
-	int i;
-	u64 packets, bytes;
-
-	for_each_possible_cpu(i) {
-
-		const struct pcpu_lstats *lb_stats;
-		unsigned int start;
-		u64 tpackets, tbytes;
-		
-		lb_stats = per_cpu_ptr(dev->lstats, i);
-
-		do {
-			start = u64_stats_fetch_begin(&lb_stats->syncp);
-			tbytes = u64_stats_read(lb_stats->bytes64);
-			tpackets  = u64_stats_read(lb_stats->packets64);
-		} while(u64_stats_fetch_retry(&stats->syncp, start));
-
-		packets += tpackets;
-		bytes += tbytes;	
-
-		stats->rx_packets = packets;
-		stats->rx_bytes = bytes; 
-	}
-}
-
 static void vnic_setup(struct net_device *dev) 
 {
 	//Initialize device structure 
 	ether_setup(dev);
 
-	dev->netdev_ops = &dummy_netdev_ops;
+	dev->netdev_ops = &vnic_netdev_ops;
 	dev->needs_free_netdev = true; 
-r
+
 	//disable ARP and Multicast because this is virtual device. 	
 	dev->flags |= IFF_NOARP;
 	dev->flags &= ~IFF_MULTICAST;	
@@ -69,9 +68,10 @@ r
 }
 
 
-static struct rtnl_link_ops dummy_link_ops __read_mostly =
+static struct rtnl_link_ops vnic_link_ops __read_mostly =
 {
 	.kind = DRV_NAME,
+	.priv_size = sizeof(struct vnic_private),
 	.setup = vnic_setup,
 };
 
