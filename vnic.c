@@ -16,10 +16,23 @@ struct vnic_private {
 };
 	
 	
-static void vnic_get_stats64(struct net_device *dev, 
+static int vnic_dev_init(struct net_device *dev)
+{
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
+		return -ENOMEM;
+	return 0;
+}
+
+static void vnic_dev_uninit(struct net_device *dev)
+{
+	free_percpu(dev->tstats);
+}
+
+static void vnic_get_stats64(struct net_device *dev,
 				struct rtnl_link_stats64 *stats)
 {
-	dev_get_tstats64(dev,stats);
+	dev_get_tstats64(dev, stats);
 }
 
 static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -35,6 +48,8 @@ static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
 
 static struct net_device_ops vnic_netdev_ops = 
 {
+	.ndo_init		=	vnic_dev_init,
+	.ndo_uninit		=	vnic_dev_uninit,
 	.ndo_start_xmit		=	vnic_xmit,
 	.ndo_set_mac_address	=	eth_mac_addr,
 	.ndo_get_stats64	=	vnic_get_stats64,
