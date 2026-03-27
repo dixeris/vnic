@@ -11,26 +11,36 @@
 
 #define DRV_NAME	"vnic"
 
+
+static char *fwd_device_name = "wlo0";
+
 struct vnic_private {
-	
+	struct net_device *fwd_device;
 };
 	
 	
 static void vnic_get_stats64(struct net_device *dev, 
 				struct rtnl_link_stats64 *stats)
 {
-	dev_get_tstats64(dev,stats);
+	dev_get_tstats64(dev, stats);
 }
 
 static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	int ret; 
+	unsigned int len = skb->len;
+	struct vnic_private *priv = netdev_priv(dev);
 
-	dev_sw_netstats_tx_add(dev, 1, skb->len);
+	//change net_device structure to process skb 
+	skb->dev = priv->fwd_device;
 	
-	skb_tx_timestamp(skb);
-	dev_kfree_skb(skb);
+	ret = dev_queue_xmit(skb);
+	if(likely(ret == NET_XMIT_SUCCESS || ret == NET_XMIT_CN)) {
 	
-	return NETDEV_TX_OK;
+		dev_sw_netstats_tx_add(dev, 1, len);
+	}
+	
+	return ret;
 }
 
 static struct net_device_ops vnic_netdev_ops = 
@@ -40,10 +50,26 @@ static struct net_device_ops vnic_netdev_ops =
 	.ndo_get_stats64	=	vnic_get_stats64,
 };
 
+module_param(fwd_device_name, charp, 0444);
+MODULE_PARM_DESC(fwd_device_name, "Physical device to attach to this");
+
 static void vnic_setup(struct net_device *dev) 
 {
+	struct vnic_private *priv;
+	//find fwd_device net_device struct by its name 
+	struct net_device *fwd_device = dev_get_by_name(&init_net,
+							fwd_device_name);
+
+	if(!fwd_device) {
+		printk(KERN_ERR "Cannot find specified physical net device");
+		return; 
+	}
+
 	//Initialize device structure 
 	ether_setup(dev);
+
+	priv = netdev_priv(dev);	
+	priv->fwd_device = fwd_device; 
 
 	dev->netdev_ops = &vnic_netdev_ops;
 	dev->needs_free_netdev = true; 
@@ -65,6 +91,7 @@ static void vnic_setup(struct net_device *dev)
 	dev->hw_enc_features |= dev->features;
 	eth_hw_addr_random(dev);
 
+	
 }
 
 
@@ -77,12 +104,13 @@ static struct rtnl_link_ops vnic_link_ops __read_mostly =
 
 static __exit void vnic_cleanup(void)
 {
+	rtnl_link_unregister(&vnic_link_ops);
 	return;
 }
 
 static __init int vnic_init_module(void) 
 {
-	int i, err = 0;
+	int err = 0;
 
 	rtnl_lock();
 	err = __rtnl_link_register(&vnic_link_ops);
