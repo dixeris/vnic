@@ -1,31 +1,68 @@
 #include <linux/init.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/ethtool.h>
+#include <linux/etherdevice.h>
 #include <linux/printk.h>
 #include <linux/netdevice.h>
+#include <linux/u64_stats_sync.h>
+#include <linux/net_tstamp.h>
 #include <net/rtnetlink.h>
 
 #define DRV_NAME	"vnic"
 
+struct vnic_private {
+	
+};
+	
+	
+static int vnic_dev_init(struct net_device *dev)
+{
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
+		return -ENOMEM;
+	return 0;
+}
+
+static void vnic_dev_uninit(struct net_device *dev)
+{
+	free_percpu(dev->tstats);
+}
+
+static void vnic_get_stats64(struct net_device *dev,
+				struct rtnl_link_stats64 *stats)
+{
+	dev_get_tstats64(dev, stats);
+}
+
+static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+
+	dev_sw_netstats_tx_add(dev, 1, skb->len);
+	
+	skb_tx_timestamp(skb);
+	dev_kfree_skb(skb);
+	
+	return NETDEV_TX_OK;
+}
+
 static struct net_device_ops vnic_netdev_ops = 
 {
 	.ndo_init		=	vnic_dev_init,
+	.ndo_uninit		=	vnic_dev_uninit,
 	.ndo_start_xmit		=	vnic_xmit,
-	.ndo_validate		=	eth_validate_addr,
-	.ndo_set_rx_mode	=	set_multicast_list,
-	.ndo_set_ma_address	=	eth_mac_addr,
+	.ndo_set_mac_address	=	eth_mac_addr,
 	.ndo_get_stats64	=	vnic_get_stats64,
-	.ndo_change_carrier	=	vnic_change_carrier,
 };
-
 
 static void vnic_setup(struct net_device *dev) 
 {
 	//Initialize device structure 
 	ether_setup(dev);
 
-	dev->netdev_ops = &dummy_netdev_ops;
+	dev->netdev_ops = &vnic_netdev_ops;
 	dev->needs_free_netdev = true; 
-r
+
 	//disable ARP and Multicast because this is virtual device. 	
 	dev->flags |= IFF_NOARP;
 	dev->flags &= ~IFF_MULTICAST;	
@@ -46,9 +83,10 @@ r
 }
 
 
-static struct rtnl_link_ops dummy_link_ops __read_mostly =
+static struct rtnl_link_ops vnic_link_ops __read_mostly =
 {
 	.kind = DRV_NAME,
+	.priv_size = sizeof(struct vnic_private),
 	.setup = vnic_setup,
 };
 
