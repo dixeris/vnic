@@ -5,6 +5,7 @@
 #include <linux/etherdevice.h>
 #include <linux/printk.h>
 #include <linux/netdevice.h>
+#include <linux/ip.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/net_tstamp.h>
 #include <net/rtnetlink.h>
@@ -30,17 +31,43 @@ static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
 	int ret; 
 	unsigned int len = skb->len;
 	struct vnic_private *priv = netdev_priv(dev);
+	struct iphdr *iph;
 
+	//to prevent network loop
+	if(skb->mark == 0x77) {
+		goto drop;
+	}
+
+	iph = ip_hdr(skb);
+
+	//is this packet headed to myself or outside?
+	if(iph->protocol == IPPROTO_ICMP && iph->daddr == in_aton("10.0.0.1")) 
+	{
+		if(handle_ping_reply(skb,dev) == 0) {
+			dev_sw_netstats_tx_add(dev, 1, len);
+			return NETDEV_TX_OK;
+		}
+	}
+
+	//if the packet is headed to outside 
 	//change net_device structure to process skb 
+	//mark first
+	skb->mark = 0x77;
 	skb->dev = priv->fwd_device;
 	
 	ret = dev_queue_xmit(skb);
 	if(likely(ret == NET_XMIT_SUCCESS || ret == NET_XMIT_CN)) {
 	
 		dev_sw_netstats_tx_add(dev, 1, len);
+
 	}
 	
 	return ret;
+
+drop:
+	dev_kfree_skb(skb);
+	printk(KERN_INFO "network loop occur for vnic! Drop the packet\n");
+	return NETDEV_TX_OK;
 }
 
 static struct net_device_ops vnic_netdev_ops = 
