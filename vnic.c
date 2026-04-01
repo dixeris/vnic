@@ -1,3 +1,4 @@
+#include <linux/minmax.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -9,6 +10,7 @@
 #include <linux/u64_stats_sync.h>
 #include <linux/net_tstamp.h>
 #include <net/rtnetlink.h>
+#include <net/icmp.h>
 
 #define DRV_NAME	"vnic"
 
@@ -19,6 +21,21 @@ struct vnic_private {
 	struct net_device *fwd_device;
 };
 	
+static __always_inline void swap_src_dst_mac(void *data)
+{
+	unsigned short *p = data;
+	unsigned short dst[3];
+
+	dst[0] = p[0];
+	dst[1] = p[1];
+	dst[2] = p[2];
+	p[0] = p[3];
+	p[1] = p[4];
+	p[2] = p[5];
+	p[3] = dst[0];
+	p[4] = dst[1];
+	p[5] = dst[2];
+}
 	
 static void vnic_get_stats64(struct net_device *dev, 
 				struct rtnl_link_stats64 *stats)
@@ -43,7 +60,8 @@ static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
 	//is this packet headed to myself or outside?
 	if(iph->protocol == IPPROTO_ICMP && iph->daddr == in_aton("10.0.0.1")) 
 	{
-		if(handle_ping_reply(skb,dev) == 0) {
+		ret = handle_ping_reply(skb,dev,priv->fwd_device);
+		if(likely(ret == NET_XMIT_SUCCESS || ret == NET_XMIT_CN)) {
 			dev_sw_netstats_tx_add(dev, 1, len);
 			return NETDEV_TX_OK;
 		}
@@ -62,13 +80,49 @@ static netdev_tx_t vnic_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	}
 	
-	return ret;
+	return NETDEV_TX_OK;
 
 drop:
 	dev_kfree_skb(skb);
 	printk(KERN_INFO "network loop occur for vnic! Drop the packet\n");
 	return NETDEV_TX_OK;
 }
+
+static int handle_ping_reply(struct skb_buff *skb, struct net_device *dev,
+					struct net_device *fwd_device) 
+{
+	int ret;
+	struct ethhdr *eth = eth_hdr(skb);
+	struct icmphdr *icmph = icmp_hdr(skb);
+
+	//change to ECHOREPLY
+	icmph->type	=	ICMP_ECHOREPLY;
+	
+	//ip address swap
+	swap(iph->saddr,iph->daddr);
+	
+	//MAC address swap 
+	swap_src_dst_mac(eth);
+
+	//checksum recalculatation	
+	
+	//ip checksum 
+	ip_send_check(iph);
+
+	//icmp(transport layer) checksum 
+	icmph->checksum = 0;
+	//icmphdr checksum size is 16bit. we have to fold 32-bit checksum 
+	//to 16bit 
+	icmph->checksum = csum_fold(skb_checksum(skb, ip_hdrlen(skb), 
+				skb->len - ip_hdrlen(skb), 0));
+	
+	//send 
+	skb->dev	=	fwd_device;
+
+	ret = dev_queue_xmit(skb);
+	return ret;
+}
+
 
 static struct net_device_ops vnic_netdev_ops = 
 {
