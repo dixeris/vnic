@@ -63,7 +63,6 @@ static int get_nxthop_ha(struct sk_buff *skb, void *dst_ha,
 	fl4.flowi4_oif = fwd_device->ifindex; 
 	fl4.flowi4_mark = skb->mark;
 	fl4.flowi4_uid = sock_net_uid(net, NULL);
-	fl4.flowi4_dscp = ip4h_dscp(ip_hdr(skb));
 	fl4.flowi4_proto = IPPROTO_ICMP;
 
 	//get rtable for next hop 
