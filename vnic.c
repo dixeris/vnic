@@ -12,6 +12,7 @@
 #include <linux/inet.h>
 #include <net/rtnetlink.h>
 #include <net/icmp.h>
+
 #define DRV_NAME	"vnic"
 
 
@@ -64,21 +65,37 @@ static int get_nxthop_ha(struct sk_buff *skb, void *dst_ha,
 	fl4.flowi4_mark = skb->mark;
 	fl4.flowi4_uid = sock_net_uid(net, NULL);
 	fl4.flowi4_proto = IPPROTO_ICMP;
+	fl4.flowi4_flags |= FLOWI_FLAG_ANYSRC;
 
 	//get rtable for next hop 
 	rt = ip_route_output_key(net, &fl4);
 
-	if (IS_ERR(rt))
+	if (IS_ERR(rt)) {
+		int err_code = PTR_ERR(rt);
+
+        pr_err("vnic: ip_route_output_key failed! dest: %pI4, err: %d\n",
+               &fl4.daddr, err_code);
 		return ret;
+	}
+	pr_info("after route_output_key\n");
+
+	if (IS_ERR_OR_NULL(rt)) {
+	    pr_err("vNIC ERROR: Routing lookup failed! PTR_ERR: %ld\n", PTR_ERR(rt));
+	    return ret;
+	}
 
 	//ARP(neighbour) lookup 
-
-	neigh = ip_neigh_for_gw(rt, NULL, NULL);
+	bool is_ipv6gw = 0; 
+	neigh = ip_neigh_for_gw(rt, skb, &is_ipv6gw);
+	pr_info("after ip_neighbor_for_gw\n");
 	if (!IS_ERR(neigh)) {
+		pr_info("successfully get neighbour\n");
 		memcpy(dst_ha, neigh->ha, ETH_ALEN);
 	        neigh_release(neigh);
+
 		ret = 0;
 	}
+
 
 	ip_rt_put(rt);
 	return ret; 
@@ -89,8 +106,11 @@ static int handle_ping_reply(struct sk_buff *skb, struct net_device *dev,
 {
 	int ret;
 	struct ethhdr *eth = eth_hdr(skb);
+	pr_info("eth_hdr success\n");
 	struct icmphdr *icmph = icmp_hdr(skb);
+	pr_info("icmphdr success\n");
 	struct iphdr *iph = ip_hdr(skb);
+	pr_info("ip_hdr success\n");
 	unsigned char dst_ha[ETH_ALEN];
 
 
@@ -98,10 +118,13 @@ static int handle_ping_reply(struct sk_buff *skb, struct net_device *dev,
 	icmph->type	=	ICMP_ECHOREPLY;
 	
 	//ip address swap
+	pr_info("before swap\n");
 	swap(iph->saddr,iph->daddr);
+	pr_info("after swap\n");
 	
 	//MAC address setting 
 	if(!get_nxthop_ha(skb, dst_ha, iph, fwd_device)) {
+		pr_info("do swap\n");
 		swap_src_dst_mac(eth, dst_ha);
 	}
 
@@ -116,8 +139,7 @@ static int handle_ping_reply(struct sk_buff *skb, struct net_device *dev,
 	icmph->checksum = 0;
 	//icmphdr checksum size is 16bit. we have to fold 32-bit checksum 
 	//to 16bit 
-	icmph->checksum = csum_fold(skb_checksum(skb, ip_hdrlen(skb), 
-				skb->len - ip_hdrlen(skb), 0));
+	icmph->checksum = ip_compute_csum(icmph, ntohs(iph->tot_len) - ip_hdrlen(skb));
 	
 	//send 
 	skb->dev	=	fwd_device;
